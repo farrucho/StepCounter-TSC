@@ -33,7 +33,7 @@ def log_serial_data(port, baudrate, data_filename):
             print(f"[Logger Thread] Serial port opened. Writing data to '{data_filename}'")
             with open(data_filename, "w") as f_data:
                 # Write a header for clarity
-                f_data.write("ax,ay,az,gx,gy,gz\n")
+                # f_data.write("ax,ay,az,gx,gy,gz\n")
                 
                 while not stop_event.is_set():
                     try:

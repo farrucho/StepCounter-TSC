@@ -1,60 +1,56 @@
 #!/usr/bin/env bash
-# ============================================================
-# Usage: ./compile.sh <file.ino>
-# Compile and upload a single .ino file by creating temp sketch folder
-# ============================================================
-
 set -e
 
 BOARD="arduino:mbed_nano:nano33ble"
-INO_FILE="$1"
 
-if [ -z "$INO_FILE" ]; then
-  echo "Usage: $0 <file.ino>"
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <main.ino> [files_to_include...]"
   exit 1
 fi
 
-if [ ! -f "$INO_FILE" ]; then
-  echo "Error: file '$INO_FILE' not found"
-  exit 1
-fi
+MAIN_INO="$1"
+shift 1
 
-# Create a temp directory for this sketch
+FILES_TO_COPY=("$MAIN_INO" "$@")
+
 TMP_SKETCH_DIR=$(mktemp -d)
-
-# Copy .ino file into temp dir, rename .ino file to match folder name
 SKETCH_NAME="temp_sketch"
-mkdir -p "$TMP_SKETCH_DIR/$SKETCH_NAME"
-cp "$INO_FILE" "$TMP_SKETCH_DIR/$SKETCH_NAME/$SKETCH_NAME.ino"
+SKETCH_PATH="$TMP_SKETCH_DIR/$SKETCH_NAME"
 
-# Find Arduino Nano 33 port
+mkdir -p "$SKETCH_PATH"
+
+echo "📁 Creating temporary sketch: $SKETCH_PATH"
+
+# Copy all provided files
+for f in "${FILES_TO_COPY[@]}"; do
+  if [ -f "$f" ]; then
+    echo "➡️  Including: $f"
+    cp "$f" "$SKETCH_PATH/"
+  else
+    echo "⚠️  Warning: file '$f' does not exist, skipping"
+  fi
+done
+
+# Rename the main INO to match folder
+BASENAME=$(basename "$MAIN_INO")
+rm "$SKETCH_PATH/$BASENAME"                        # remove original
+cp "$MAIN_INO" "$SKETCH_PATH/$SKETCH_NAME.ino"     # rename only once
+
+# Detect board
 PORT=$(arduino-cli board list | grep "Nano 33" | awk '{print $1}' | head -n1)
 
 if [ -z "$PORT" ]; then
-  echo "⚠️  No Arduino Nano 33 found! Connect your board and retry."
+  echo "⚠️  No Arduino Nano 33 detected!"
   rm -rf "$TMP_SKETCH_DIR"
   exit 1
 fi
 
-echo "🔧 Compiling $INO_FILE ..."
-arduino-cli compile --fqbn "$BOARD" "$TMP_SKETCH_DIR/$SKETCH_NAME"
+echo "🔧 Compiling..."
+arduino-cli compile --fqbn "$BOARD" "$SKETCH_PATH"
 
 echo "🚀 Uploading to $PORT ..."
-if ! arduino-cli upload -p "$PORT" --fqbn "$BOARD" "$TMP_SKETCH_DIR/$SKETCH_NAME"; then
-  echo "⚠️ Upload failed — board might have switched ports, retrying..."
-  sleep 2
-  NEWPORT=$(arduino-cli board list | grep "Nano 33" | awk '{print $1}' | head -n1)
-  if [ -n "$NEWPORT" ]; then
-    echo "🔁 Retrying upload on $NEWPORT ..."
-    arduino-cli upload -p "$NEWPORT" --fqbn "$BOARD" "$TMP_SKETCH_DIR/$SKETCH_NAME"
-  else
-    echo "❌ Still no port found. Try double-tapping reset on the board."
-    rm -rf "$TMP_SKETCH_DIR"
-    exit 1
-  fi
-fi
+arduino-cli upload -p "$PORT" --fqbn "$BOARD" "$SKETCH_PATH"
 
 echo "✅ Upload complete!"
 
-# Clean up temp folder
 rm -rf "$TMP_SKETCH_DIR"

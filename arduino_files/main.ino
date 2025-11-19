@@ -1,4 +1,6 @@
 #include <Wire.h>
+#include "StepDetector.h"
+StepDetector stepDetector;
 
 /* Helper Functions */
 // documentation used: DocID025715 Rev 3
@@ -85,10 +87,10 @@ int begin()
   // Table 66. CTRL_REG6_XL register
   // ODR_XL2 ODR_XL1 ODR_XL0 FS1_XL FS0_XL BW_SCAL _ODR BW_XL1 BW_XL0
   // ODR_XL (7:5) : 100 -> 238 Hz
-  // FS_XL (4:3) : 00 -> +-2g (maior resolucao (usain bolt chega a aprox 1g de aceleracao para contar passos isto basta))
+  // FS_XL (4:3) : 11 -> +-8g (boa resolucao (usain bolt chega a aprox 1g de aceleracao para contar passos isto basta e assim o sinal NAO SATURA))
   // BW_SCAL_ODR (2:2): 1 -> if 0 bandwidth determined by ODR selection, otherwise manual
   // BW_XL (2:0): 10 -> 105 Hz
-  writeRegister(LSM9DS1_ADDRESS, LSM9DS1_CTRL_REG6_XL, 0b10000110);
+  writeRegister(LSM9DS1_ADDRESS, LSM9DS1_CTRL_REG6_XL, 0b10011110);
 
   // Configure Gyroscope
   // Table 44. CTRL_REG1_G register
@@ -119,6 +121,23 @@ void setup() {
     }
     else{
         Serial.println("Initialize correctly IMU!");
+
+        // --- Configure the Step Detector ---
+        stepDetector.setAlpha(0.0113); 
+        stepDetector.setWindowSize(80);
+        // UPDATED: Call the new function with all 7 parameters from your Python code
+        stepDetector.setStepThresholds(
+            74,       // min_peak_interval
+            0.0214,   // max1_min_diff_bounds lower
+            0.1546,      // max1_min_diff_bounds upper
+            0,   // max2_min_diff_bounds lower
+            0.6653,      // max2_min_diff_bounds upper
+            0,   // max1_max2_diff_bounds lower
+            0.6557       // max1_max2_diff_bounds upper
+        );
+        
+        Serial.println("Step Detector Configured. Starting...");
+        Serial.println("ax,ay,az,state,step_detected");
     }
     
     // Serial.print("Accelerometer sample rate = ");
@@ -131,6 +150,7 @@ unsigned long lastFreqPrint = 0;
 volatile unsigned long sampleCount = 0;
 
 void loop() {
+
   // try to read status register
   int status = readRegister(LSM9DS1_ADDRESS, LSM9DS1_STATUS_REG);
   if (status < 0) {
@@ -178,42 +198,47 @@ void loop() {
 
     // print real values
     // 2.1 Sensor characteristics
-    // Linear acceleration sensitivity for 2g is 0.061 mg/LSB
-    // Serial.print("X=");
-    // Serial.print(x_raw*0.061/1000);
-    // Serial.print("  Y=");
-    // Serial.print(y_raw*0.061/1000);
-    // Serial.print("  Z=");
-    // Serial.println(z_raw*0.061/1000);
+    // Linear acceleration sensitivity for 8g is 0.244 mg/LSB
+    float ax = x_raw*0.244/1000; // convert raw to g
+    float ay = y_raw*0.244/1000;
+    float az = z_raw*0.244/1000;
 
-    Serial.print(x_raw*0.061/1000, 3);
+    /* CODIGO USADO PARA ENVIAR DADOS PARA OPTIMIZAR OS PARAMETROS */
+    Serial.print(ax, 6);
     Serial.print(",");
-    Serial.print(y_raw*0.061/1000, 3);
+    Serial.print(ay, 6);
     Serial.print(",");
-    Serial.print(z_raw*0.061/1000, 3);
-    Serial.print(",");
-    Serial.print(0, 3);
-    Serial.print(",");
-    Serial.print(0, 3);
-    Serial.print(",");
-    Serial.println(0, 3);
+    Serial.println(az, 6);
 
 
+    bool stepWasDetected = stepDetector.process(ax, ay, az);
 
+    // Serial.print(ax, 6);
+    // Serial.print(",");
+    // Serial.print(ay, 6);
+    // Serial.print(",");
+    // Serial.print(az, 6);
+    // Serial.print(",");
+    // Serial.print(stepDetector.getCurrentState());
+    // Serial.print(",");
+    // Serial.println(stepWasDetected ? "1" : "0");
 
+    // if (stepWasDetected) {
+    //   totalSteps++;
+    // }
 
     // count this sample
     sampleCount++;
   }
 
   // Print frequency every 1000 ms
-  unsigned long now = millis();
-  if (now - lastFreqPrint >= 1000) {
-    Serial.print("Measured Frequency: ");
-    Serial.print(sampleCount);
-    Serial.println(" Hz");
+  // unsigned long now = millis();
+  // if (now - lastFreqPrint >= 1000) {
+  //   Serial.print("Measured Frequency: ");
+  //   Serial.print(sampleCount);
+  //   Serial.println(" Hz");
 
-    sampleCount = 0;
-    lastFreqPrint = now;
-  }
+  //   sampleCount = 0;
+  //   lastFreqPrint = now;
+  // }
 }
