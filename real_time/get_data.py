@@ -1,102 +1,118 @@
-import serial
+import asyncio
+from bleak import BleakClient
 import threading
-import sys
+import time
 
-# === CONFIGURATION ===
-# --- Serial Port ---
-PORT = "/dev/ttyACM0"
-BAUD = 115200 # Match your Arduino's Serial.begin() rate
+# ==============================
+# CONFIG
+# ==============================
+ADDRESS = "CA:2E:65:03:DD:B6"  # <<< change to your Arduino BLE MAC address
+CHAR_UUID = "506cad0b-684a-4666-91c7-56d4490b4acc"
 
-# --- Output Files ---
 DATA_FILENAME = "../data/sensor_data.csv"
 MANUAL_SAMPLES_FILENAME = "../data/manual_step_samples.csv"
-# ======================
 
-
-# --- Shared State between threads ---
-# stop_event signals the logging thread to stop gracefully
-stop_event = threading.Event()
-# sample_counter is incremented by the logger and read by the main thread
+# Shared state
 sample_counter = 0
+stop_event = threading.Event()
 
-def log_serial_data(port, baudrate, data_filename):
-    """
-    This function runs in a separate thread.
-    It opens the serial port, writes each line of data to a file,
-    and increments a global sample counter.
-    """
+
+# ==========================================================
+# BLE LOGGER THREAD — receives BLE notifications continuously
+# ==========================================================
+def start_ble_logger():
+    asyncio.run(ble_logger_task())
+
+
+async def ble_logger_task():
     global sample_counter
-    
-    print(f"[Logger Thread] Trying to open serial port {port}...")
-    try:
-        with serial.Serial(port, baudrate, timeout=1) as ser:
-            print(f"[Logger Thread] Serial port opened. Writing data to '{data_filename}'")
-            with open(data_filename, "w") as f_data:
-                # Write a header for clarity
-                # f_data.write("ax,ay,az,gx,gy,gz\n")
-                f_data.write("ax,ay,az\n")
-                
-                while not stop_event.is_set():
-                    try:
-                        line = ser.readline().decode('utf-8', errors='ignore').strip()
-                        if line:
-                            # Write the raw sensor data to its file
-                            f_data.write(f"{line}\n")
-                            # Increment the shared sample counter
+
+    print(f"[BLE] Connecting to {ADDRESS}...")
+
+    while not stop_event.is_set():
+        try:
+            async with BleakClient(ADDRESS) as client:
+                if not client.is_connected:
+                    print("[BLE] Failed to connect. Retrying in 1s...")
+                    await asyncio.sleep(1)
+                    continue
+
+                print("[BLE] Connected!")
+                print("[BLE] Subscribing to notifications...")
+
+                # Open file outside callback, keep it open for entire session
+                with open(DATA_FILENAME, "w") as f:
+                    f.write("ax,ay,az,state,ultrasound,stepdetected\n")
+
+                    def handle(sender, data):
+                        global sample_counter
+                        try:
+                            text = data.decode("utf-8").strip()
+                            f.write(text + "\n")
+                            f.flush()
                             sample_counter += 1
-                    except serial.SerialException:
-                        print("[Logger Thread] Error reading from serial port. Exiting.")
-                        break
+                        except Exception as e:
+                            print(f"[BLE] Decode error: {e}")
 
-    except serial.SerialException as e:
-        print(f"[Logger Thread] FATAL: Could not open serial port {port}: {e}", file=sys.stderr)
-        return
+                    await client.start_notify(CHAR_UUID, handle)
+                    print("[BLE] Logging started.")
 
-    print("[Logger Thread] Stopped.")
+                    # Keep the connection alive and logging running until stop event
+                    while not stop_event.is_set():
+                        await asyncio.sleep(0.1)
+
+                    print("[BLE] Stop requested. Stopping notifications and closing file...")
+                    await client.stop_notify(CHAR_UUID)
+                    # File closed automatically by 'with' context
+
+                return  # exit after graceful stop
+
+        except Exception as e:
+            print(f"[BLE] Error: {e}. Reconnecting in 1s...")
+            await asyncio.sleep(1)
 
 
-# --- Main part of the script ---
+# ==========================================================
+# MAIN THREAD — handles user input ("press ENTER when you step")
+# ==========================================================
 if __name__ == "__main__":
-    # Create and start the thread that will handle serial logging
-    serial_thread = threading.Thread(target=log_serial_data, args=(PORT, BAUD, DATA_FILENAME))
-    serial_thread.start()
 
-    # Give the thread a moment to start and check the serial port
-    # A short sleep is good practice to ensure the thread is running before we proceed.
-    threading.Event().wait(2) 
-    if not serial_thread.is_alive():
-        print("[Main] Logger thread failed to start, likely a serial port issue. Exiting.")
-        sys.exit(1)
+    print("Starting BLE logging thread...")
+    ble_thread = threading.Thread(target=start_ble_logger)
+    ble_thread.start()
 
-    print("\n" + "="*50)
-    print("      DATA RECORDING HAS STARTED")
-    print("="*50)
+    # Wait a bit for BLE thread to connect and start logging
+    time.sleep(2)
+
+    print("\n" + "=" * 50)
+    print("      DATA RECORDING HAS STARTED (BLE MODE)")
+    print("=" * 50)
     print("\n >> Press [ENTER] each time you take a step.")
     print(f" >> Step sample numbers will be saved to '{MANUAL_SAMPLES_FILENAME}'.")
-    print("\n >> Type 'q' and press [ENTER] to quit gracefully.\n")
+    print("\n >> Type 'q' and press [ENTER] to quit.\n")
 
     step_count = 0
+
     with open(MANUAL_SAMPLES_FILENAME, "w") as f_steps:
-        # Write a header
         f_steps.write("sample_number\n")
-        
+
         while True:
-            user_input = input() 
+            user_input = input()
             if user_input.lower() == 'q':
-                print("[Main] 'q' received. Shutting down...")
+                print("[MAIN] Quit received. Stopping BLE logging...")
                 break
-            
-            # Read the current sample number from the global variable
+
             current_sample = sample_counter
             f_steps.write(f"{current_sample}\n")
+            f_steps.flush()
             step_count += 1
+
             print(f"--- Step {step_count} recorded at SAMPLE NUMBER: {current_sample} ---")
 
-    # --- Graceful shutdown ---
-    print("[Main] Telling logger thread to stop...")
+    # graceful shutdown
     stop_event.set()
-    serial_thread.join()
+    ble_thread.join()
 
-    print("\nRecording stopped. Your data has been saved.")
-    print(f"Sensor Readings: {DATA_FILENAME}")
-    print(f"Manual Step Samples: {MANUAL_SAMPLES_FILENAME}")
+    print("\nRecording stopped.")
+    print(f"Sensor Data: {DATA_FILENAME}")
+    print(f"Manual Steps: {MANUAL_SAMPLES_FILENAME}")

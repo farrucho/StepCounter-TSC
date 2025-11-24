@@ -179,7 +179,7 @@ void loop() {
   static unsigned long lastSampleTime = 0;
   unsigned long now = millis();
   
-  // Force 125Hz (1000 / 200 = 8ms)
+  // Force 200Hz (1000 / 200 = 5ms)
   if (now - lastSampleTime < 5) {
       return;
   }
