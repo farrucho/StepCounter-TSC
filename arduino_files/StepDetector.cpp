@@ -1,10 +1,16 @@
 #include "StepDetector.h"
+#include "NeuralNetwork.h"
+
+
+const float SCALER_MEANS[11] = { 0.077899f, -0.007444f, 0.077909f, 0.085343f, 0.085353f, 0.036678f, 0.005187f, 0.005288f, 0.495623f, 0.504377f, 30.513977f };
+const float SCALER_STDS[11] = { 0.199575f, 0.169173f, 0.199571f, 0.159960f, 0.156068f, 0.079525f, 0.010317f, 0.010627f, 0.189128f, 0.189128f, 14.910222f };
+
 
 // --- Constructor ---
 StepDetector::StepDetector() {
     // Initialize default parameters
     alpha = 0.03;
-    windowSize = 10; 
+    windowSize = 10;
     isFirstSample = true;
 
     // SMA variables
@@ -19,9 +25,6 @@ StepDetector::StepDetector() {
     sample_count = 0;
     prev_sma = 0;
     current_sma = 0;
-
-    // UPDATED: Set default thresholds from your Python example, including upper bounds
-    setStepThresholds(30, 0.0001, 1.0, 0.0001, 1.0, 0.0001, 1.0);
     
     // Allocate buffer with default size
     setWindowSize(windowSize);
@@ -43,20 +46,6 @@ void StepDetector::setWindowSize(int size) {
     sma_index = 0;
     sma_sum = 0.0;
     sma_buffer_full = false;
-}
-
-// UPDATED: Now stores all 6 bound values
-void StepDetector::setStepThresholds(int min_peak_interval, 
-                                   float max1_min_diff_lower, float max1_min_diff_upper,
-                                   float max2_min_diff_lower, float max2_min_diff_upper,
-                                   float max1_max2_diff_lower, float max1_max2_diff_upper) {
-    min_peak_interval_samples = min_peak_interval;
-    max1_min_diff_lower_bound = max1_min_diff_lower;
-    max1_min_diff_upper_bound = max1_min_diff_upper;
-    max2_min_diff_lower_bound = max2_min_diff_lower;
-    max2_min_diff_upper_bound = max2_min_diff_upper;
-    max1_max2_diff_lower_bound = max1_max2_diff_lower;
-    max1_max2_diff_upper_bound = max1_max2_diff_upper;
 }
 
 
@@ -111,28 +100,70 @@ bool StepDetector::process(float ax, float ay, float az) {
             candidate_first_max_sample = sample_count - 1;
         }
         else if (currentState == LOOKING_FOR_SECOND_MAX) {
-            float max2_val = prev_sma;
-            float diff_max1_min = candidate_first_max_val - candidate_min_val;
-            float diff_max2_min = max2_val - candidate_min_val;
-            float diff_max1_max2 = abs(candidate_first_max_val - max2_val);
-            unsigned long interval_width = (sample_count - 1) - candidate_first_max_sample;
+            // float max2_val = prev_sma;
+            // float diff_max1_min = candidate_first_max_val - candidate_min_val;
+            // float diff_max2_min = max2_val - candidate_min_val;
+            // float diff_max1_max2 = abs(candidate_first_max_val - max2_val);
+            // unsigned long interval_width = (sample_count - 1) - candidate_first_max_sample;
 
-            // --- UPDATED: Full validation check with lower AND upper bounds ---
-            bool is_wide_enough = interval_width >= min_peak_interval_samples;
-            bool is_max1_min_valid = (max1_min_diff_lower_bound <= diff_max1_min && diff_max1_min <= max1_min_diff_upper_bound);
-            bool is_max2_min_valid = (max2_min_diff_lower_bound <= diff_max2_min && diff_max2_min <= max2_min_diff_upper_bound);
-            bool is_max1_max2_valid = (max1_max2_diff_lower_bound <= diff_max1_max2 && diff_max1_max2 <= max1_max2_diff_upper_bound);
+            // float f0 = candidate_first_max_val;
+            // float f1 = candidate_min_val;
+            // float f2 = max2_val;
+            // float f3 = diff_max1_min;
+            // float f4 = diff_max2_min;
+            // float f5 = diff_max1_max2;
+            // float f6 = (float)(candidate_min_sample - candidate_first_max_sample)/interval_width;
+            // float f7 = (float)((sample_count - 1) - candidate_min_sample)/interval_width;
+
+
+            float val_max1 = candidate_first_max_val;
+            float val_min  = candidate_min_val;
+            float val_max2 = prev_sma; // The current peak we just found
+
+            // --- 2. CALCULATE TIMES ---
+            // Cast to float immediately so division works later
+            float t1 = (float)(candidate_min_sample - candidate_first_max_sample);
+            float t2 = (float)((sample_count - 1) - candidate_min_sample);
+            float duration = t1 + t2;
+
+            // --- 3. CALCULATE FEATURES (Order must match Python EXACTLY) ---
             
-            if (is_wide_enough && is_max1_min_valid && is_max2_min_valid && is_max1_max2_valid) {
-                stepDetected = true;
-                currentState = LOOKING_FOR_MIN;
-                candidate_first_max_val = max2_val;
-                candidate_first_max_sample = sample_count - 1;
-            } else {
-                currentState = LOOKING_FOR_MIN;
-                candidate_first_max_val = max2_val;
-                candidate_first_max_sample = sample_count - 1;
+            // [0, 1, 2] Raw Values
+            float f0 = val_max1;
+            float f1 = val_min;
+            float f2 = val_max2;
+
+            // [3, 4, 5] Differences
+            float f3 = val_max1 - val_min;
+            float f4 = val_max2 - val_min;
+            float f5 = abs(val_max1 - val_max2);
+
+            // [6, 7] Slopes (Protect against divide by 0)
+            float f6 = (t1 > 0) ? (f3 / t1) : 0.0f; 
+            float f7 = (t2 > 0) ? (f4 / t2) : 0.0f;
+
+            // [8, 9] Time Ratios
+            float f8 = (duration > 0) ? (t1 / duration) : 0.0f;
+            float f9 = (duration > 0) ? (t2 / duration) : 0.0f;
+
+            // [10] Duration
+            float f10 = duration;
+
+            // --- 4. PACK INTO ARRAY ---
+            float features[11] = { f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 };
+
+            for(int i=0; i<11; i++){
+                features[i] = (features[i] - SCALER_MEANS[i]) / SCALER_STDS[i];
             }
+
+            float prob = neuralNet.predict(features);
+            stepDetected = (prob > 0.5f);
+
+  
+
+            currentState = LOOKING_FOR_MIN;
+            candidate_first_max_val = val_max2;
+            candidate_first_max_sample = sample_count - 1;
         }
     }
 

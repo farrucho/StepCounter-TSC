@@ -1,5 +1,21 @@
+// Wire1 needs to be used in this board to communicate between accelerometer and gyro
 #include <Wire.h>
+// State Machine Algorithm Implementation Library
 #include "StepDetector.h"
+// Bluetooth
+#include <ArduinoBLE.h>
+
+// Create a random service UUID
+BLEService stepService("8e078479-a26f-4471-a7c3-81209ffff3c6");
+
+// Create a characteristic for data streaming
+BLECharacteristic dataChar(
+  "506cad0b-684a-4666-91c7-56d4490b4acc",
+  BLERead | BLENotify,
+  128 // maximum number of bytes in data string
+);
+
+// create state machine object
 StepDetector stepDetector;
 
 /* Helper Functions */
@@ -22,7 +38,6 @@ StepDetector stepDetector;
 #define LSM9DS1_OUT_X_L_M          0x28
 
 
-// Wire1 needs to be used in this board to communicate between accelerometer and gyro
 
 void writeRegister(uint8_t slaveAddress, uint8_t reg, uint8_t val) {
     Wire1.beginTransmission(slaveAddress);
@@ -63,6 +78,7 @@ void end()
   Wire1.end();
 }
 
+
 int begin()
 {
   // 5.1.1 do manual
@@ -74,11 +90,11 @@ int begin()
   delay(10);
 
 
-  // if accelerometer and gyroscope read only register WHO_AM_I can be read then the I2C is working properly 
+  // if accelerometer and gyroscope read only register WHO_AM_I can be correctly read then the I2C is working properly 
   // 7.11
   // table 43
   if (readRegister(LSM9DS1_ADDRESS, LSM9DS1_WHO_AM_I) != 0b01101000) {
-    Serial.print(readRegister(LSM9DS1_ADDRESS, LSM9DS1_WHO_AM_I)); // print to see what is happening
+    // Serial.print(readRegister(LSM9DS1_ADDRESS, LSM9DS1_WHO_AM_I)); // print to see what is happening
     end();
     return 0;
   }
@@ -92,7 +108,7 @@ int begin()
   // BW_XL (2:0): 10 -> 105 Hz
   writeRegister(LSM9DS1_ADDRESS, LSM9DS1_CTRL_REG6_XL, 0b10011110);
 
-  // Configure Gyroscope
+  // Configure Gyroscope, we did not use it in the end, but maybe in a nearby future...
   // Table 44. CTRL_REG1_G register
   // ODR_G2 ODR_G1 ODR_G0 FS_G1 FS_G0 0 (1) BW_G1 BW_G0
   // ODR_G (7:5) : 100 -> 238 Hz
@@ -107,42 +123,45 @@ int begin()
 
 
 
-
-
 /* Main Functions */
 
 void setup() {
-    Serial.begin(115200);
-    while (!Serial);
-    
-    if (!begin()) {
-        Serial.println("Failed to initialize IMU!");
-        while (1);
-    }
-    else{
-        Serial.println("Initialize correctly IMU!");
+  
+  if (!BLE.begin()) {
+    // Serial.begin(115200); // used when recording training data
+    while (1);
+  }
 
-        // --- Configure the Step Detector ---
-        stepDetector.setAlpha(0.0113); 
-        stepDetector.setWindowSize(80);
-        // UPDATED: Call the new function with all 7 parameters from your Python code
-        stepDetector.setStepThresholds(
-            74,       // min_peak_interval
-            0.0214,   // max1_min_diff_bounds lower
-            0.1546,      // max1_min_diff_bounds upper
-            0,   // max2_min_diff_bounds lower
-            0.6653,      // max2_min_diff_bounds upper
-            0,   // max1_max2_diff_bounds lower
-            0.6557       // max1_max2_diff_bounds upper
-        );
-        
-        Serial.println("Step Detector Configured. Starting...");
-        Serial.println("ax,ay,az,state,step_detected");
-    }
-    
-    // Serial.print("Accelerometer sample rate = ");
-    // Serial.print(IMU.accelerationSampleRate());
-    // Serial.println(" Hz");
+  // while (!Serial);
+  
+  if (!begin()) {
+  //     Serial.println("Failed to initialize IMU!");
+      while (1);
+  }
+
+  // Configure the Step Detector Parameters
+  stepDetector.setAlpha(0.1013); 
+  stepDetector.setWindowSize(11);
+
+  // Serial.println("Initialize correctly IMU!");  
+  // Serial.println("Step Detector Configured. Starting...");
+  // Serial.println("ax,ay,az,state,step_detected");
+  
+  
+  // Serial.print("Accelerometer sample rate = ");
+  // Serial.print(IMU.accelerationSampleRate());
+  // Serial.println(" Hz");
+
+
+  BLE.setLocalName("MLP-StepSensor");
+  BLE.setAdvertisedService(stepService);
+
+  stepService.addCharacteristic(dataChar);
+  BLE.addService(stepService);
+
+  dataChar.writeValue("Starting...");
+
+  BLE.advertise();
 }
 
 
@@ -150,13 +169,21 @@ unsigned long lastFreqPrint = 0;
 volatile unsigned long sampleCount = 0;
 
 void loop() {
-
   // try to read status register
   int status = readRegister(LSM9DS1_ADDRESS, LSM9DS1_STATUS_REG);
   if (status < 0) {
-    Serial.println("Error reading status register");
+    // Serial.println("Error reading status register");
     return;
   }
+
+  static unsigned long lastSampleTime = 0;
+  unsigned long now = millis();
+  
+  // Force 125Hz (1000 / 200 = 8ms)
+  if (now - lastSampleTime < 5) {
+      return;
+  }
+  lastSampleTime = now;
 
   // bit XLDA (0: a new set of data is not yet available; 1: a new set of data is available)
   if (status & 0x01) {
@@ -170,13 +197,13 @@ void loop() {
     Wire1.write(LSM9DS1_OUT_X_XL | 0b10000000); 
 
     if (Wire1.endTransmission() != 0) {
-      Serial.println("Error addressing acc data");
+      // Serial.println("Error addressing acc data");
       return;
     }
     
     // requests 6 bytes starting at address OUT_X_XL with auto-increment
     if (Wire1.requestFrom(LSM9DS1_ADDRESS, (uint8_t)6) != 6) { // number of bytes received must be 6
-      Serial.println("Error requesting acc data");
+      // Serial.println("Error requesting acc data");
       return;
     }
 
@@ -185,8 +212,8 @@ void loop() {
     // 7.31 OUT_X_XL (28h - 29h) 
     // 7.32 OUT_Y_XL (2Ah - 2Bh)
     // 7.33 OUT_Z_XL (2Ch - 2Dh)
-    uint8_t xl = Wire1.read(); // 0x28h
-    uint8_t xh = Wire1.read(); // 0x29h
+    uint8_t xl = Wire1.read(); // 0x28h x_low byte
+    uint8_t xh = Wire1.read(); // 0x29h x_high byte
     uint8_t yl = Wire1.read(); // 0x2Ah
     uint8_t yh = Wire1.read(); // 0x2Bh
     uint8_t zl = Wire1.read(); // 0x2Ch
@@ -203,16 +230,11 @@ void loop() {
     float ay = y_raw*0.244/1000;
     float az = z_raw*0.244/1000;
 
-    /* CODIGO USADO PARA ENVIAR DADOS PARA OPTIMIZAR OS PARAMETROS */
-    Serial.print(ax, 6);
-    Serial.print(",");
-    Serial.print(ay, 6);
-    Serial.print(",");
-    Serial.println(az, 6);
-
-
+    float ultrasound = 0.52;
     bool stepWasDetected = stepDetector.process(ax, ay, az);
+    
 
+    // used when recording training data
     // Serial.print(ax, 6);
     // Serial.print(",");
     // Serial.print(ay, 6);
@@ -221,22 +243,30 @@ void loop() {
     // Serial.print(",");
     // Serial.print(stepDetector.getCurrentState());
     // Serial.print(",");
+    // Serial.print(ultrasound);
+    // Serial.print(",");
     // Serial.println(stepWasDetected ? "1" : "0");
 
-    // if (stepWasDetected) {
-    //   totalSteps++;
-    // }
+    char buffer[100];
+    sprintf(buffer, "%.6f,%.6f,%.6f,%s,%.6f,%d",
+          ax, ay, az,
+          stepDetector.getCurrentState(),
+          ultrasound,
+          stepWasDetected ? 1 : 0);
 
+    dataChar.writeValue(buffer);
+
+    
     // count this sample
     sampleCount++;
   }
-
-  // Print frequency every 1000 ms
+  BLE.poll();
+  // Print serial sending data frequency every 3000 ms
   // unsigned long now = millis();
-  // if (now - lastFreqPrint >= 1000) {
+  // if (now - lastFreqPrint >= 3000) {
   //   Serial.print("Measured Frequency: ");
   //   Serial.print(sampleCount);
-  //   Serial.println(" Hz");
+  //   Serial.println(" Hz"); 
 
   //   sampleCount = 0;
   //   lastFreqPrint = now;

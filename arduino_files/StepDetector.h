@@ -11,11 +11,6 @@ public:
     // --- Configuration ---
     void setAlpha(float alpha);
     void setWindowSize(int size);
-    // UPDATED: Now accepts lower and upper bounds for all difference checks
-    void setStepThresholds(int min_peak_interval, 
-                           float max1_min_diff_lower, float max1_min_diff_upper,
-                           float max2_min_diff_lower, float max2_min_diff_upper,
-                           float max1_max2_diff_lower, float max1_max2_diff_upper);
 
     // --- Main Processing Function ---
     bool process(float ax, float ay, float az);
