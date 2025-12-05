@@ -121,12 +121,57 @@ int begin()
 }
 
 
+/* Ultrasound Sensor */
+const int trigPin = 6;
+const int echoPin = 10;
+
+volatile unsigned long tBegin = 0;
+volatile unsigned long tEnd = 0;
+volatile bool echoDone = false;
+volatile bool awaitingEcho = false;
+
+float currentDistance = 0.0f; // stores the latest distance in cm
+unsigned long lastPingMs = 0;
+
+float maxPeakDistance = 0.0f; // stores the first Max distance in cm
+
+String LastStateStr = "";
+
+
+
+void echoISR() {
+  if (!awaitingEcho) return;
+  if (digitalRead(echoPin) == HIGH) {
+    tBegin = micros();
+  } else {
+    tEnd = micros();
+    echoDone = true;
+    awaitingEcho = false;
+  }
+}
+
+void triggerPing() {
+  // only trigger if we aren't already waiting for a response
+  // if (!awaitingEcho) {
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+    awaitingEcho = true;
+  // }
+}
+
 
 
 /* Main Functions */
 
 void setup() {
-  
+  Serial.begin(115200);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
   if (!BLE.begin()) {
     // Serial.begin(115200); // used when recording training data
     while (1);
@@ -139,9 +184,11 @@ void setup() {
       while (1);
   }
 
+  attachInterrupt(digitalPinToInterrupt(echoPin), echoISR, CHANGE);
+
   // Configure the Step Detector Parameters
-  stepDetector.setAlpha(0.1013); 
-  stepDetector.setWindowSize(11);
+  stepDetector.setAlpha(0.0679); 
+  stepDetector.setWindowSize(10);
 
   // Serial.println("Initialize correctly IMU!");  
   // Serial.println("Step Detector Configured. Starting...");
@@ -169,6 +216,40 @@ unsigned long lastFreqPrint = 0;
 volatile unsigned long sampleCount = 0;
 
 void loop() {
+  if (echoDone) {
+    noInterrupts();
+    unsigned long us = tEnd - tBegin;
+    echoDone = false;
+    interrupts();
+
+    // ler apenas valores reais e descartar timeouts
+    if (us <= 69000) { 
+      currentDistance = (us * 0.0343f) / 2.0f;
+    }
+
+  }
+
+
+
+  String currentStateStr = stepDetector.getCurrentState();
+
+  // Serial.print(currentStateStr);
+
+  if (currentStateStr == "LOOKING_FOR_MIN" and (LastStateStr == "LOOKING_FOR_FIRST_MAX" || LastStateStr == "LOOKING_FOR_SECOND_MAX")) {
+    maxPeakDistance = currentDistance;
+  }
+
+  LastStateStr = currentStateStr;
+
+  // Serial.print(maxPeakDistance);
+
+
+
+  // quando não estamos à espera de ECHO e já passou o intervalo, volta a disparar
+  if (!awaitingEcho && !echoDone) {
+    triggerPing();
+  }
+
   // try to read status register
   int status = readRegister(LSM9DS1_ADDRESS, LSM9DS1_STATUS_REG);
   if (status < 0) {
@@ -230,9 +311,18 @@ void loop() {
     float ay = y_raw*0.244/1000;
     float az = z_raw*0.244/1000;
 
-    float ultrasound = 0.52;
+
+
+
+
+
+    float ultrasound = 0.0f;
+
     bool stepWasDetected = stepDetector.process(ax, ay, az);
     
+    if (stepWasDetected){
+      ultrasound = abs(maxPeakDistance - currentDistance);
+    }
 
     // used when recording training data
     // Serial.print(ax, 6);
@@ -247,14 +337,25 @@ void loop() {
     // Serial.print(",");
     // Serial.println(stepWasDetected ? "1" : "0");
 
+
+    
     char buffer[100];
     sprintf(buffer, "%.6f,%.6f,%.6f,%s,%.6f,%d",
-          ax, ay, az,
-          stepDetector.getCurrentState(),
-          ultrasound,
-          stepWasDetected ? 1 : 0);
+      ax, ay, az,
+      stepDetector.getCurrentState(),
+      ultrasound,
+      stepWasDetected ? 1 : 0,
+      maxPeakDistance,
+      currentDistance
+    );
+    
 
+    // Serial.print(maxPeakDistance);
+    // Serial.print("-");
+    // Serial.print(currentDistance);
+    // Serial.print("\n");
     dataChar.writeValue(buffer);
+
 
     
     // count this sample

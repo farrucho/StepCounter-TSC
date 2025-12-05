@@ -34,7 +34,6 @@ void setup() {
   pinMode(echoPin, INPUT);
   Serial.begin(9600);
   attachInterrupt(digitalPinToInterrupt(echoPin), echoISR, CHANGE);
-  triggerPing(); // primeiro disparo
 }
 
 void loop() {
