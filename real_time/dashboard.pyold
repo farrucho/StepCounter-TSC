@@ -1,0 +1,242 @@
+import asyncio
+import math
+from collections import deque
+import sys
+import threading
+from PyQt5 import QtWidgets, QtCore
+import pyqtgraph as pg
+from bleak import BleakClient
+import re
+
+# CHANGE THIS to your Arduino's BLE MAC address:
+BLE_ADDRESS = "CA:2E:65:03:DD:B6"
+CHAR_UUID = "506cad0b-684a-4666-91c7-56d4490b4acc"
+
+# Data buffers
+MAX_POINTS = 500
+ax_data = deque(maxlen=MAX_POINTS)
+ay_data = deque(maxlen=MAX_POINTS)
+az_data = deque(maxlen=MAX_POINTS)
+mag_data = deque(maxlen=MAX_POINTS)
+ultrasound_data = deque(maxlen=MAX_POINTS)
+step_markers = deque(maxlen=MAX_POINTS)
+
+buffer = ""
+step_count = 0
+window = None
+running = True
+
+class MainWindow(QtWidgets.QMainWindow):
+    data_received = QtCore.pyqtSignal(dict)
+    status_changed = QtCore.pyqtSignal(str)
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Step Counter - Real-Time Data')
+        self.setGeometry(100, 100, 1400, 900)
+        self.setStyleSheet("background-color: #0a0a0a; color: white;")
+        
+        central_widget = QtWidgets.QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QtWidgets.QVBoxLayout(central_widget)
+        
+        stats_widget = QtWidgets.QWidget()
+        stats_layout = QtWidgets.QHBoxLayout(stats_widget)
+        
+        self.step_label = QtWidgets.QLabel('Steps: 0')
+        self.step_label.setStyleSheet('font-size: 24px; font-weight: bold; padding: 10px;')
+        
+        self.status_label = QtWidgets.QLabel('Status: Connecting...')
+        self.status_label.setStyleSheet('font-size: 16px; padding: 10px; color: #888;')
+        
+        stats_layout.addWidget(self.step_label)
+        stats_layout.addWidget(self.status_label)
+        stats_layout.addStretch()
+        
+        layout.addWidget(stats_widget)
+        
+        pg.setConfigOptions(antialias=True)
+        self.graphics_widget = pg.GraphicsLayoutWidget()
+        self.graphics_widget.setBackground((10, 10, 10))
+        layout.addWidget(self.graphics_widget)
+        
+        self.ax_plot = self.graphics_widget.addPlot(row=0, col=0, title='Acceleration X')
+        self.ay_plot = self.graphics_widget.addPlot(row=0, col=1, title='Acceleration Y')
+        self.az_plot = self.graphics_widget.addPlot(row=0, col=2, title='Acceleration Z')
+        
+        self.ultrasound_plot = self.graphics_widget.addPlot(row=1, col=0, title='Ultrasound Distance')
+        self.mag_plot = self.graphics_widget.addPlot(row=1, col=1, colspan=2, title='Acceleration Magnitude')
+        
+        for plot in [self.ax_plot, self.ay_plot, self.az_plot, self.ultrasound_plot, self.mag_plot]:
+            plot.showGrid(x=True, y=True, alpha=0.3)
+        
+        self.ax_plot.setYRange(-2, 2)
+        self.ay_plot.setYRange(-2, 2)
+        self.az_plot.setYRange(-1, 3)
+        # self.ultrasound_plot.setYRange(0, 1200)
+        self.ultrasound_plot.enableAutoRange(axis='y', enable=True)
+        self.mag_plot.setYRange(-3, 3)
+        
+        self.ax_curve = self.ax_plot.plot(pen=pg.mkPen('r', width=2))
+        self.ay_curve = self.ay_plot.plot(pen=pg.mkPen('g', width=2))
+        self.az_curve = self.az_plot.plot(pen=pg.mkPen('b', width=2))
+        self.ultrasound_curve = self.ultrasound_plot.plot(pen=pg.mkPen('orange', width=2), 
+                                                           fillLevel=0, brush=(255, 165, 0, 50))
+        self.mag_curve = self.mag_plot.plot(pen=pg.mkPen('purple', width=2), 
+                                             fillLevel=0, brush=(168, 85, 247, 30))
+        
+        self.step_scatter = pg.ScatterPlotItem(size=15, pen=pg.mkPen('r', width=2), 
+                                               brush=pg.mkBrush(255, 0, 0, 200), symbol='|')
+        self.mag_plot.addItem(self.step_scatter)
+        
+        self.data_received.connect(self.update_plots)
+        self.status_changed.connect(self.update_status)
+        
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.refresh_plots)
+        self.timer.start(50)
+        
+    def update_status(self, status):
+        self.status_label.setText(f'Status: {status}')
+        
+    def update_plots(self, data):
+        global step_count
+        
+        # Print all received data
+        print(f"ax={data['ax']:.3f}, ay={data['ay']:.3f}, az={data['az']:.3f}, "
+              f"state={data['state']}, ultrasound={data['ultrasound']:.2f}, "
+              f"step={data['step_detected']}, mag={data['acc_norm']:.3f}")
+        
+        ax_data.append(data['ax'])
+        ay_data.append(data['ay'])
+        az_data.append(data['az'])
+        mag_data.append(data['acc_norm'])
+        ultrasound_data.append(data['ultrasound'])
+        
+        if data['step_detected'] == 1:
+            step_count += 1
+            step_markers.append(1)
+            self.step_label.setText(f'Steps: {step_count}')
+        else:
+            step_markers.append(0)
+    
+    def refresh_plots(self):
+        if len(ax_data) == 0:
+            return
+        
+        x = list(range(len(ax_data)))
+        
+        self.ax_curve.setData(x, list(ax_data))
+        self.ay_curve.setData(x, list(ay_data))
+        self.az_curve.setData(x, list(az_data))
+        self.ultrasound_curve.setData(x, list(ultrasound_data))
+        self.mag_curve.setData(x, list(mag_data))
+        
+        step_x = []
+        step_y = []
+        for i, (marker, mag) in enumerate(zip(step_markers, mag_data)):
+            if marker == 1:
+                step_x.append(i)
+                step_y.append(mag)
+        
+        if step_x:
+            self.step_scatter.setData(x=step_x, y=step_y)
+        else:
+            self.step_scatter.setData(x=[], y=[])
+    
+    def closeEvent(self, event):
+        global running
+        running = False
+        print("Shutting down...")
+        event.accept()
+
+def handle_notification(sender, data):
+    global buffer
+    if not window or not running:
+        return
+        
+    try:
+        text = data.decode("utf-8")
+        buffer += text
+        
+        while True:
+            match = re.search(r'(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+),([A-Z_]+),(-?\d+\.\d+),(\d+)', buffer)
+            
+            if not match:
+                break
+                
+            ax = float(match.group(1))
+            ay = float(match.group(2))
+            az = float(match.group(3))
+            state = match.group(4)
+            ultrasound = float(match.group(5))
+            step_detected = int(match.group(6))
+            
+            buffer = buffer[match.end():]
+            
+            acc_norm = math.sqrt(ax**2 + ay**2 + az**2)
+            
+            data_dict = {
+                'ax': ax,
+                'ay': ay,
+                'az': az,
+                'state': state,
+                'ultrasound': ultrasound,
+                'step_detected': step_detected,
+                'acc_norm': acc_norm
+            }
+            
+            if step_detected == 1:
+                print(f"STEP! Total={step_count + 1}")
+            
+            window.data_received.emit(data_dict)
+                
+        if len(buffer) > 500:
+            buffer = buffer[-200:]
+            
+    except Exception as e:
+        print(f"Error: {e}")
+
+async def ble_loop():
+    print("Connecting to", BLE_ADDRESS)
+    if window:
+        window.status_changed.emit("Connecting...")
+    
+    try:
+        async with BleakClient(BLE_ADDRESS) as client:
+            if not client.is_connected:
+                print("Failed to connect.")
+                if window:
+                    window.status_changed.emit("Connection Failed")
+                return
+            
+            print("Connected! Enabling notifications...")
+            if window:
+                window.status_changed.emit("Connected")
+            
+            await client.start_notify(CHAR_UUID, handle_notification)
+            print(f"Notifications enabled")
+            
+            if window:
+                window.status_changed.emit("Receiving Data")
+            
+            print("Listening for data...")
+            while client.is_connected and running:
+                await asyncio.sleep(1)
+                
+    except Exception as e:
+        print(f"BLE Error: {e}")
+
+def run_ble():
+    asyncio.run(ble_loop())
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    
+    window = MainWindow()
+    window.show()
+    
+    ble_thread = threading.Thread(target=run_ble, daemon=True)
+    ble_thread.start()
+    
+    sys.exit(app.exec_())

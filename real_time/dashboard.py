@@ -45,12 +45,21 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.step_label = QtWidgets.QLabel('Steps: 0')
         self.step_label.setStyleSheet('font-size: 24px; font-weight: bold; padding: 10px;')
+        self.mean_length_label = QtWidgets.QLabel('Mean step length: 0.00 cm')
+        self.mean_length_label.setStyleSheet('font-size: 18px; padding: 10px; color: #ddd;')
+        self.last_length_label = QtWidgets.QLabel('Last step length: 0.00 cm')
+        self.last_length_label.setStyleSheet('font-size: 18px; padding: 10px; color: #ddd;')
+        self.total_distance_label = QtWidgets.QLabel('Total distance: 0.00 cm')
+        self.total_distance_label.setStyleSheet('font-size: 18px; padding: 10px; color: #ddd;')
         
         self.status_label = QtWidgets.QLabel('Status: Connecting...')
         self.status_label.setStyleSheet('font-size: 16px; padding: 10px; color: #888;')
         
         stats_layout.addWidget(self.step_label)
         stats_layout.addWidget(self.status_label)
+        stats_layout.addWidget(self.mean_length_label)
+        stats_layout.addWidget(self.last_length_label)
+        stats_layout.addWidget(self.total_distance_label)
         stats_layout.addStretch()
         
         layout.addWidget(stats_widget)
@@ -80,7 +89,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ay_curve = self.ay_plot.plot(pen=pg.mkPen('g', width=2))
         self.az_curve = self.az_plot.plot(pen=pg.mkPen('b', width=2))
         self.ultrasound_curve = self.ultrasound_plot.plot(pen=pg.mkPen('orange', width=2), 
-                                                           fillLevel=0, brush=(255, 165, 0, 50))
+                                   fillLevel=0, brush=(255, 165, 0, 50))
         self.mag_curve = self.mag_plot.plot(pen=pg.mkPen('purple', width=2), 
                                              fillLevel=0, brush=(168, 85, 247, 30))
         
@@ -101,21 +110,30 @@ class MainWindow(QtWidgets.QMainWindow):
     def update_plots(self, data):
         global step_count
         
-        # Print all received data
+                # Print all received data
         print(f"ax={data['ax']:.3f}, ay={data['ay']:.3f}, az={data['az']:.3f}, "
-              f"state={data['state']}, ultrasound={data['ultrasound']:.2f}, "
-              f"step={data['step_detected']}, mag={data['acc_norm']:.3f}")
+        f"state={data['state']}, step_len={data['step_length']:.2f}, "
+        f"step={data['step_detected']}, mag={data['acc_norm']:.3f}")
         
         ax_data.append(data['ax'])
         ay_data.append(data['ay'])
         az_data.append(data['az'])
         mag_data.append(data['acc_norm'])
-        ultrasound_data.append(data['ultrasound'])
+        ultrasound_data.append(data['step_length'])
         
         if data['step_detected'] == 1:
             step_count += 1
             step_markers.append(1)
             self.step_label.setText(f'Steps: {step_count}')
+            # Update mean step length over detected steps (exclude zeros)
+            lengths = [v for v, m in zip(ultrasound_data, step_markers) if m == 1 and v > 0]
+            if lengths:
+                mean_len = sum(lengths) / len(lengths)
+                self.mean_length_label.setText(f'Mean step length: {mean_len:.2f} cm')
+                last_len = lengths[-1]
+                self.last_length_label.setText(f'Last step length: {last_len:.2f} cm')
+                total_dist = sum(lengths)
+                self.total_distance_label.setText(f'Total distance: {total_dist:.2f} cm')
         else:
             step_markers.append(0)
     
@@ -168,7 +186,7 @@ def handle_notification(sender, data):
             ay = float(match.group(2))
             az = float(match.group(3))
             state = match.group(4)
-            ultrasound = float(match.group(5))
+            step_length = float(match.group(5))
             step_detected = int(match.group(6))
             
             buffer = buffer[match.end():]
@@ -180,7 +198,7 @@ def handle_notification(sender, data):
                 'ay': ay,
                 'az': az,
                 'state': state,
-                'ultrasound': ultrasound,
+                'step_length': step_length,
                 'step_detected': step_detected,
                 'acc_norm': acc_norm
             }
