@@ -6,9 +6,8 @@ const float SCALER_MEANS[11] = { 0.077899f, -0.007444f, 0.077909f, 0.085343f, 0.
 const float SCALER_STDS[11] = { 0.199575f, 0.169173f, 0.199571f, 0.159960f, 0.156068f, 0.079525f, 0.010317f, 0.010627f, 0.189128f, 0.189128f, 14.910222f };
 
 
-// --- Constructor ---
 StepDetector::StepDetector() {
-    // Initialize default parameters
+    // initialize
     alpha = 0.03;
     windowSize = 10;
     isFirstSample = true;
@@ -20,17 +19,16 @@ StepDetector::StepDetector() {
     sma_buffer_full = false;
     last_sma_value = 0.0;
     
-    // Peak detection state
+    // peak detection state
     currentState = LOOKING_FOR_FIRST_MAX;
     sample_count = 0;
     prev_sma = 0;
     current_sma = 0;
     
-    // Allocate buffer with default size
+    // allocate buffer with default size
     setWindowSize(windowSize);
 }
 
-// --- Configuration Methods ---
 void StepDetector::setAlpha(float new_alpha) {
     alpha = new_alpha;
 }
@@ -59,12 +57,11 @@ const char* StepDetector::getCurrentState() {
 }
 
 
-// --- Main Processing Function ---
 bool StepDetector::process(float ax, float ay, float az) {
     bool stepDetected = false;
     sample_count++;
     
-    // 1. Exponential Moving Average
+    // EMA
     if (isFirstSample) {
         ax_lp = ax; ay_lp = ay; az_lp = az;
         isFirstSample = false;
@@ -74,10 +71,9 @@ bool StepDetector::process(float ax, float ay, float az) {
         az_lp = (alpha * az) + (1.0 - alpha) * az_lp;
     }
 
-    // 2. Magnitude
     float magnitude_lp = sqrt(ax_lp * ax_lp + ay_lp * ay_lp + az_lp * az_lp) - 1.0;
 
-    // 3. Simple Moving Average
+    // SMA to magnitude
     sma_sum -= sma_buffer[sma_index];
     sma_buffer[sma_index] = magnitude_lp;
     sma_sum += magnitude_lp;
@@ -91,7 +87,7 @@ bool StepDetector::process(float ax, float ay, float az) {
     prev_sma = current_sma;
     current_sma = sma_sum / windowSize;
 
-    // 4. Peak Detection State Machine
+    // peak detection state machine
     // Check for local maximum (positive peak)
     if (prev_sma > current_sma && prev_sma > last_sma_value) {
         if (currentState == LOOKING_FOR_FIRST_MAX || currentState == LOOKING_FOR_MIN) {
@@ -120,13 +116,11 @@ bool StepDetector::process(float ax, float ay, float az) {
             float val_min  = candidate_min_val;
             float val_max2 = prev_sma; // The current peak we just found
 
-            // --- 2. CALCULATE TIMES ---
-            // Cast to float immediately so division works later
             float t1 = (float)(candidate_min_sample - candidate_first_max_sample);
             float t2 = (float)((sample_count - 1) - candidate_min_sample);
             float duration = t1 + t2;
 
-            // --- 3. CALCULATE FEATURES (Order must match Python EXACTLY) ---
+            // CALCULATE FEATURES (Order must match Python EXACTLY)
             
             // [0, 1, 2] Raw Values
             float f0 = val_max1;
@@ -149,7 +143,6 @@ bool StepDetector::process(float ax, float ay, float az) {
             // [10] Duration
             float f10 = duration;
 
-            // --- 4. PACK INTO ARRAY ---
             float features[11] = { f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 };
 
             for(int i=0; i<11; i++){

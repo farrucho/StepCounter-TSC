@@ -37,6 +37,11 @@ StepDetector stepDetector;
 #define LSM9DS1_STATUS_REG_M       0x27
 #define LSM9DS1_OUT_X_L_M          0x28
 
+#define DISTANCE_BUFFER_SIZE 3
+
+float distanceBuffer[DISTANCE_BUFFER_SIZE] = {0.0f, 0.0f, 0.0f}; // Buffer para armazenar as últimas 3 distâncias
+int distanceIndex = 0; // Índice atual para o buffer
+float averageDistance = 0.0f; // Média das últimas 3 distâncias
 
 
 void writeRegister(uint8_t slaveAddress, uint8_t reg, uint8_t val) {
@@ -229,6 +234,18 @@ void loop() {
 
   }
 
+  // Atualizar o buffer de distâncias
+  distanceBuffer[distanceIndex] = currentDistance; // Armazenar a distância no buffer
+  distanceIndex = (distanceIndex + 1) % DISTANCE_BUFFER_SIZE; // Atualizar o índice do buffer (circular)
+
+  // Calcular a média das últimas 3 distâncias
+  averageDistance = 0.0f;
+  for (int i = 0; i < DISTANCE_BUFFER_SIZE; i++) {
+    averageDistance += distanceBuffer[i];
+  }
+  averageDistance /= DISTANCE_BUFFER_SIZE; // Média das últimas 3 distâncias
+  currentDistance = averageDistance; // Atualizar a distância atual com a média
+
 
 
   String currentStateStr = stepDetector.getCurrentState();
@@ -245,7 +262,7 @@ void loop() {
 
 
 
-  // quando não estamos à espera de ECHO e já passou o intervalo, volta a disparar
+  // quando não estamos à espera de ECHO e já passou o intervalo, volta a disparar verificamos que volta sempre
   if (!awaitingEcho && !echoDone) {
     triggerPing();
   }
